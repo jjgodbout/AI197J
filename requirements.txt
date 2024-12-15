@@ -1,0 +1,15 @@
+pandas
+boto3
+snowflake-snowpark-python
+snowflake-connector-python
+snowflake-sqlalchemy
+jupyter
+python-dotenv
+pymysql
+tiktoken
+openai
+llama-index
+anthropic
+literalai
+streamlit
+streamlit-authenticator

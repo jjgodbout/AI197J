@@ -1,0 +1,16 @@
+cookie:
+  expiry_days: 30
+  key: 28cd93b128025018e1b4bc0be1c799831079dbc811d063c5de8f632feb7fa5a4
+  name: colby_auth_cookie
+credentials:
+  usernames:
+    jgodbout@colby.edu:
+      email: jgodbout@colby.edu
+      first_name: Jon
+      last_name: Godbout
+      logged_in: false
+      password: $2b$12$WJilVHYXNq2eRSZgPhGX9OVuk0a.RmK6i/kop5d6qx5tEcttJEvNO
+      password_hint: 'queens college #1'
+      roles: null
+pre-authorized:
+  emails: []
