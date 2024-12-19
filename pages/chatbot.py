@@ -27,6 +27,69 @@ class ChatManager:
     DEFAULT_SYSTEM_MESSAGE = """You are a helpful AI assistant. You aim to be accurate, 
     informative, and engaging while maintaining a natural conversational style."""
 
+    @staticmethod
+    @st.cache_resource
+    def _get_literal_client(api_key: str) -> LiteralClient:
+        """Cached creation of LiteralAI client"""
+        return LiteralClient(api_key=api_key)
+
+    @staticmethod
+    @st.cache_data(ttl=60)  # Cache for 1 minute
+    def _get_user_threads(_literal_client, user_email: str) -> List[Dict]:
+        """Cached version of getting user threads"""
+        try:
+            literal_user = _literal_client.api.get_user(identifier=user_email)
+            if not literal_user:
+                raise ValueError("User not found in LiteralAI")
+
+            threads = _literal_client.api.get_threads(
+                filters={
+                    "field": "participantId",
+                    "operator": "eq",
+                    "value": literal_user.id
+                },
+                order_by={
+                    "column": "createdAt",
+                    "direction": "DESC"
+                }
+            )
+
+            return threads.data if hasattr(threads, 'data') else []
+        except Exception as e:
+            print(f"Error getting user threads: {str(e)}")
+            return []
+
+    @staticmethod
+    @st.cache_data(ttl=10)  # Cache for 10 seconds
+    def _get_thread_history(_literal_client, thread_id: str) -> List[Dict]:
+        """Cached version of getting thread history"""
+        try:
+            thread = _literal_client.api.get_thread(id=thread_id)
+            if not thread:
+                return []
+
+            messages = []
+            steps = getattr(thread, 'steps', [])
+
+            for step in steps:
+                input_data = getattr(step, 'input', {})
+                if isinstance(input_data, dict) and input_data.get('content', {}).get('content', '').strip():
+                    messages.append({
+                        'input': input_data.get('content', {})
+                    })
+
+            return messages
+        except Exception as e:
+            print(f"Error retrieving thread history: {str(e)}")
+            return []
+
+    @staticmethod
+    @st.cache_resource
+    def _create_llm_model(_config: LLMConfig, _callback_manager: Optional[CallbackManager] = None):
+        """Cached creation of LLM model"""
+        return LLMFactory.create_model(_config, _callback_manager)
+
+
     def __init__(self, query_handler):
         """Initialize ChatManager with LangChain integration"""
         # Initialize session state for chat settings
@@ -39,35 +102,31 @@ class ChatManager:
         if not literal_api_key:
             raise ValueError("LITERAL_API_KEY environment variable is not set")
         self.literal_client = LiteralClient(api_key=literal_api_key)
+        # Using static method
+        self.literal_client = ChatManager._get_literal_client(literal_api_key)
 
         # Setup Langchain callback
         callback = self.literal_client.langchain_callback()
-
         # Convert the callback to a proper BaseCallbackHandler
         if not isinstance(callback, BaseCallbackHandler):
             from langchain_core.callbacks import LangChainCallback
             callback = LangChainCallback(callback)
 
-        # Create callback manager with proper type
         self.callback_manager = CallbackManager([callback])
-
-        # Setup repository
         self.repository = LLMRepository(query_handler)
-
-        # Initialize with default model (gpt-3.5-turbo)
         self.current_config = None
         self.llm = None
         self.initialize_default_model()
 
     def initialize_default_model(self):
-        """Initialize with gpt-3.5-turbo"""
+        """Initialize with default model using cached creation"""
         try:
             model_config = self.repository.get_model("gpt-3.5-turbo")
             if not model_config:
-                raise ValueError("Default model gpt-3.5-turbo not found in database")
+                raise ValueError("Default model not found in database")
 
             self.current_config = model_config
-            self.llm = LLMFactory.create_model(model_config, self.callback_manager)
+            self.llm = ChatManager._create_llm_model(model_config, self.callback_manager)
         except Exception as e:
             raise ValueError(f"Failed to initialize default model: {str(e)}")
 
@@ -177,76 +236,15 @@ class ChatManager:
             st.error(f"Error in thread management: {str(e)}")
             raise
 
-    def process_message(self, thread_id: str, prompt: str):
+    def _log_generation(self, thread_id: str, prompt: str, response: str):
+        """Log a generation with proper metadata"""
         try:
-            # Get conversation history based on use_history setting
-            conversation_history = (
-                self.get_thread_history(thread_id)
-                if st.session_state.get('use_history', True)
-                else []
-            )
+            # Calculate token counts (approximate)
+            input_tokens = len(prompt.split())
+            output_tokens = len(response.split())
+            total_tokens = input_tokens + output_tokens
 
-            user_email = st.session_state.get('username')
-            literal_user = self.literal_client.api.get_user(identifier=user_email)
-
-            # Log user message
-            self._log_step(
-                thread_id=thread_id,
-                step_type=StepType.LLM,
-                content={
-                    "role": "user",
-                    "content": prompt
-                },
-                metadata={
-                    "user_email": user_email,
-                    "literal_user_id": literal_user.id if literal_user else None
-                }
-            )
-
-            # Build message chain
-            messages = []
-
-            # Create system message that includes both instructions and context
-            system_content = st.session_state.get('system_prompt', self.DEFAULT_SYSTEM_MESSAGE)
-            context_text = st.session_state.get('context_text', "").strip()
-
-            if context_text:
-                system_content += f"\n\nContext to consider in your responses:\n{context_text}"
-
-            messages.append(SystemMessage(content=system_content))
-
-            # Add conversation history if enabled
-            if st.session_state.get('use_history', True):
-                for msg in conversation_history:
-                    role = msg.get('input', {}).get('role')
-                    content = msg.get('input', {}).get('content')
-                    if role == 'user':
-                        messages.append(HumanMessage(content=content))
-                    elif role == 'assistant':
-                        messages.append(AIMessage(content=content))
-
-            # Add new message
-            messages.append(HumanMessage(content=prompt))
-
-            # Update model configuration with current settings
-            if hasattr(self.current_config, 'temperature'):
-                self.current_config.temperature = st.session_state.get('chat_temperature',
-                                                                       self.current_config.temperature)
-                self.llm = LLMFactory.create_model(self.current_config, self.callback_manager)
-
-            # Get streaming response
-            response = self.llm.stream(messages)
-            response_chunks = []
-
-            for chunk in response:
-                if isinstance(chunk, AIMessage):
-                    response_chunks.append(chunk.content)
-                    yield chunk.content
-
-            # Log complete response
-            full_response = ''.join(response_chunks)
-
-            # Create generation metadata including context info
+            # Create generation with thread metadata
             generation = ChatGeneration(
                 messages=[{
                     "role": "user",
@@ -254,36 +252,130 @@ class ChatManager:
                 }],
                 message_completion={
                     "role": "assistant",
-                    "content": full_response
+                    "content": response
                 },
                 model=self.current_config.model_name,
-                provider=self.current_config.provider
+                provider=self.current_config.provider,
+                token_count=total_tokens,
+                input_token_count=input_tokens,
+                output_token_count=output_tokens,
+                metadata={
+                    "thread_id": thread_id,  # Add thread_id to metadata for filtering
+                    "temperature": self.current_config.temperature,
+                    "created_at": datetime.utcnow().isoformat(),
+                    "user_email": st.session_state.get('username'),
+                    "use_history": st.session_state.get('use_history', True),
+                    "has_context": bool(st.session_state.get('context_text', "").strip())
+                },
+                settings={
+                    "temperature": self.current_config.temperature
+                }
             )
 
             # Log generation
             self.literal_client.api.create_generation(generation)
+        except Exception as e:
+            print(f"Error logging generation: {str(e)}")
+            raise
 
-            # Log assistant response with context metadata
-            self._log_step(
-                thread_id=thread_id,
-                step_type=StepType.LLM,
-                content={
-                    "role": "assistant",
-                    "content": full_response
-                },
-                metadata={
-                    "token_count": len(full_response.split()),
-                    "completion_type": "stream",
-                    "user_email": user_email,
-                    "literal_user_id": literal_user.id if literal_user else None,
-                    "model": self.current_config.model_name,
-                    "provider": self.current_config.provider,
-                    "system_prompt": st.session_state.get('system_prompt'),
-                    "temperature": self.current_config.temperature,
-                    "use_history": st.session_state.get('use_history', True),
-                    "has_context": bool(context_text)
-                }
-            )
+    def process_message(self, thread_id: str, prompt: str):
+        """Process and handle message exchange within a thread context"""
+        try:
+            with self.literal_client.thread(thread_id=thread_id) as thread:
+                # Get conversation history based on use_history setting
+                conversation_history = (
+                    self._get_thread_history(self.literal_client, thread_id)
+                    if st.session_state.get('use_history', True)
+                    else []
+                )
+
+                user_email = st.session_state.get('username')
+                literal_user = self.literal_client.api.get_user(identifier=user_email)
+
+                # Log user message
+                self._log_step(
+                    thread_id=thread_id,
+                    step_type=StepType.LLM,
+                    content={
+                        "role": "user",
+                        "content": prompt
+                    },
+                    metadata={
+                        "user_email": user_email,
+                        "literal_user_id": literal_user.id if literal_user else None,
+                        "model": self.current_config.model_name,
+                        "temperature": self.current_config.temperature
+                    }
+                )
+
+                # Build message chain
+                messages = []
+
+                # Create system message that includes both instructions and context
+                system_content = st.session_state.get('system_prompt', self.DEFAULT_SYSTEM_MESSAGE)
+                context_text = st.session_state.get('context_text', "").strip()
+
+                if context_text:
+                    system_content += f"\n\nContext to consider in your responses:\n{context_text}"
+
+                messages.append(SystemMessage(content=system_content))
+
+                # Add conversation history if enabled
+                if st.session_state.get('use_history', True):
+                    for msg in conversation_history:
+                        role = msg.get('input', {}).get('role')
+                        content = msg.get('input', {}).get('content')
+                        if role == 'user':
+                            messages.append(HumanMessage(content=content))
+                        elif role == 'assistant':
+                            messages.append(AIMessage(content=content))
+
+                # Add new message
+                messages.append(HumanMessage(content=prompt))
+
+                # Update model configuration with current settings
+                if hasattr(self.current_config, 'temperature'):
+                    self.current_config.temperature = st.session_state.get('chat_temperature',
+                                                                           self.current_config.temperature)
+                    self.llm = ChatManager._create_llm_model(self.current_config, self.callback_manager)
+
+                # Get streaming response
+                response = self.llm.stream(messages)
+                response_chunks = []
+
+                for chunk in response:
+                    if isinstance(chunk, AIMessage):
+                        response_chunks.append(chunk.content)
+                        yield chunk.content
+
+                # Log complete response
+                full_response = ''.join(response_chunks)
+
+                # Log generation with proper metadata
+                self._log_generation(thread_id, prompt, full_response)
+
+                # Log assistant response
+                self._log_step(
+                    thread_id=thread_id,
+                    step_type=StepType.LLM,
+                    content={
+                        "role": "assistant",
+                        "content": full_response
+                    },
+                    metadata={
+                        "token_count": len(full_response.split()),
+                        "completion_type": "stream",
+                        "user_email": user_email,
+                        "literal_user_id": literal_user.id if literal_user else None,
+                        "model": self.current_config.model_name,
+                        "provider": self.current_config.provider,
+                        "system_prompt": st.session_state.get('system_prompt'),
+                        "temperature": self.current_config.temperature,
+                        "use_history": st.session_state.get('use_history', True),
+                        "has_context": bool(context_text),
+                        "thread_id": thread_id,  # Add thread_id to metadata
+                    }
+                )
 
         except Exception as e:
             error_data = {
@@ -304,66 +396,15 @@ class ChatManager:
             raise
 
     def get_thread_history(self, thread_id: str) -> List[Dict]:
-        """Get message history for a thread"""
-        try:
-            # Get thread with its steps
-            thread = self.literal_client.api.get_thread(id=thread_id)
-            if not thread:
-                print(f"Thread not found: {thread_id}")
-                return []
-
-            messages = []
-            steps = getattr(thread, 'steps', [])
-
-            # Process each step in the thread
-            for step in steps:
-                input_data = getattr(step, 'input', {})
-                if isinstance(input_data, dict) and input_data.get('content', {}).get('content', '').strip():
-                    messages.append({
-                        'input': input_data.get('content', {})
-                    })
-
-            print(f"Retrieved {len(messages)} messages from thread {thread_id}")
-            return messages
-
-        except Exception as e:
-            print(f"Error retrieving thread history: {str(e)}")
-            st.error(f"Error retrieving thread history: {str(e)}")
-            return []
+        """Get message history for a thread using cached version"""
+        return ChatManager._get_thread_history(self.literal_client, thread_id)
 
     def get_user_threads(self, user_email: str) -> List[Dict]:
-        """Get all threads for a specific user"""
-        try:
-            # First get the LiteralAI user ID
-            literal_user = self.literal_client.api.get_user(identifier=user_email)
-            if not literal_user:
-                raise ValueError("User not found in LiteralAI")
-
-            print(f"Getting threads for LiteralAI user ID: {literal_user.id}")
-
-            # Get threads filtering by participant_id (using LiteralAI user ID)
-            threads = self.literal_client.api.get_threads(
-                filters={
-                    "field": "participantId",
-                    "operator": "eq",
-                    "value": literal_user.id
-                },
-                order_by={
-                    "column": "createdAt",
-                    "direction": "DESC"
-                }
-            )
-
-            print(f"Found {len(threads.data) if hasattr(threads, 'data') else 0} threads")
-            return threads.data if hasattr(threads, 'data') else []
-
-        except Exception as e:
-            print(f"Error getting user threads: {str(e)}")
-            st.error(f"Error getting user threads: {str(e)}")
-            return []
+        """Get all threads for a specific user using cached version"""
+        return ChatManager._get_user_threads(self.literal_client, user_email)
 
     def switch_model(self, model_id: str) -> None:
-        """Switch to a different model"""
+        """Switch to a different model using cached creation"""
         try:
             model_config = self.repository.get_model(model_id)
             if not model_config:
@@ -371,7 +412,7 @@ class ChatManager:
 
             print(f"Switching to model: {model_config.model_name}")
             self.current_config = model_config
-            self.llm = LLMFactory.create_model(model_config, self.callback_manager)
+            self.llm = ChatManager._create_llm_model(model_config, self.callback_manager)
             print("Model switch successful")
 
         except Exception as e:
@@ -379,36 +420,69 @@ class ChatManager:
             raise ValueError(f"Failed to switch model: {str(e)}")
 
     def get_thread_stats(self, thread_id: str) -> Dict:
-        """Get statistics for a thread"""
+        """Get statistics for a thread including generations"""
         try:
-            thread = self.literal_client.api.get_thread(id=thread_id)
-            if not thread:
-                return {}
+            with self.literal_client.thread(thread_id=thread_id) as thread:
+                if not thread:
+                    return {}
 
-            # Get generations for the thread
-            generations = self.literal_client.api.get_generations(
-                filters={
-                    "field": "threadId",
-                    "operator": "eq",
-                    "value": thread_id
+                # Get steps from thread
+                steps = getattr(thread, 'steps', [])
+
+                # Get creation date from metadata
+                thread_metadata = getattr(thread, 'metadata', {})
+                created_at = thread_metadata.get('created_at') if thread_metadata else None
+
+                # Get generations without filters initially
+                generations = self.literal_client.api.get_generations(
+                    first=100,  # Limit to most recent 100 generations
+                    order_by={
+                        "column": "createdAt",  # Using the correct column name
+                        "direction": "DESC"
+                    }
+                )
+
+                # Filter generations in memory by matching thread_id in metadata
+                gen_data = []
+                if hasattr(generations, 'data'):
+                    gen_data = [
+                        gen for gen in generations.data
+                        if hasattr(gen, 'metadata') and
+                           gen.metadata and
+                           gen.metadata.get('thread_id') == thread_id
+                    ]
+
+                # Calculate token usage from filtered generations
+                total_tokens = sum(gen.token_count or 0 for gen in gen_data if hasattr(gen, 'token_count'))
+                input_tokens = sum(gen.input_token_count or 0 for gen in gen_data if hasattr(gen, 'input_token_count'))
+                output_tokens = sum(
+                    gen.output_token_count or 0 for gen in gen_data if hasattr(gen, 'output_token_count'))
+
+                # Get step timestamps for last message
+                step_times = [
+                    step.created_at for step in steps
+                    if hasattr(step, 'created_at')
+                ]
+                last_message = max(step_times) if step_times else None
+
+                # Calculate statistics
+                stats = {
+                    "total_messages": len(steps),
+                    "total_generations": len(gen_data),
+                    "created_at": created_at,
+                    "last_message": last_message,
+                    "model": thread_metadata.get('model_name'),
+                    "temperature": thread_metadata.get('temperature'),
+                    "total_tokens": total_tokens,
+                    "input_tokens": input_tokens,
+                    "output_tokens": output_tokens
                 }
-            )
 
-            # Calculate statistics
-            stats = {
-                "total_messages": len(getattr(thread, 'steps', [])),
-                "total_generations": len(generations.data) if hasattr(generations, 'data') else 0,
-                "created_at": thread.created_at,
-                "last_message": max([step.created_at for step in getattr(thread, 'steps', [])], default=None),
-                "model": thread.metadata.get('model_name') if thread.metadata else None,
-            }
-
-            return stats
+                return stats
 
         except Exception as e:
             print(f"Error getting thread stats: {str(e)}")
             return {}
-
 
     def render_chat_interface(self):
         """Render chat interface with settings dialog and system prompt display"""

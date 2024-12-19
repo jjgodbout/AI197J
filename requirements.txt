@@ -16,3 +16,4 @@ streamlit-authenticator
 langchain-anthropic
 cohere
 langchain-cohere
+pypdf2
