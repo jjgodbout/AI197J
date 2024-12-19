@@ -44,7 +44,7 @@ class ContextFileManager:
         if uploaded_file:
             file_data = uploaded_file.read()
 
-            # Get current thread ID if in a chat session
+            # Get current thread ID if in a llm session
             thread_id = st.session_state.get('current_thread')
 
             if st.button("Upload File"):
@@ -69,4 +69,4 @@ class ContextFileManager:
             else:
                 st.info("No files uploaded yet.")
         else:
-            st.info("Start a chat to upload context files.")
+            st.info("Start a llm to upload context files.")

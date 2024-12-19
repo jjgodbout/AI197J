@@ -68,6 +68,11 @@ class AuthManager:
         """Render login form"""
         st.subheader("Login")
 
+        if st.session_state.get("authentication_status"):
+            st.write("Authentication successful")
+            st.write(f"Username (email): {st.session_state.get('username')}")
+            st.write(f"User ID: {st.session_state.get('user_id')}")
+
         email = st.text_input("Email", key="login_email").lower()
         password = st.text_input("Password", type="password", key="login_password")
 

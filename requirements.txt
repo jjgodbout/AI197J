@@ -13,3 +13,6 @@ anthropic
 literalai
 streamlit
 streamlit-authenticator
+langchain-anthropic
+cohere
+langchain-cohere
