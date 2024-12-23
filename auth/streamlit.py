@@ -34,9 +34,6 @@ class AuthManager:
             # Try to get existing user
             user = self.client.api.get_user(identifier=email)
 
-            # Debug user object structure
-            print("User object:", user)
-
             if user:
                 return {
                     'id': getattr(user, 'id', None),
@@ -45,10 +42,16 @@ class AuthManager:
                 }
 
             # Create new user if doesn't exist
+            first_name = name.split()[0] if name else email
+            last_name = ' '.join(name.split()[1:]) if name and len(name.split()) > 1 else ''
+
             metadata = {
-                'name': name or email,
+                'first_name': first_name,
+                'last_name': last_name,
+                'email': email,
                 'created_at': datetime.utcnow().isoformat()
             }
+
             user = self.client.api.create_user(
                 identifier=email,
                 metadata=metadata

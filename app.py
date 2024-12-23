@@ -2,16 +2,15 @@ import streamlit as st
 from dotenv import load_dotenv
 import os
 from auth.streamlit import AuthManager
-from pages.chatbot import ChatManager
 from pages.context_files import ContextFileManager
 from pages.audio_creator import AudioCreator
+from pages.chatbot import render_chat_interface
 from utils.query_handler import execute_sql
+from chatbot.chatbot_manager import ChatManager
+
 
 # Load environment variables at startup
 load_dotenv()
-
-# Add debug statement
-print("Starting application...")
 
 # Configure page settings
 st.set_page_config(
@@ -21,13 +20,9 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-print("Page config set...")
-
 def initialize_session_state():
     """Initialize session state variables and managers"""
     try:
-        print("Initializing session state...")
-        # Initialize chat manager with query handler if not present
         if 'chat_manager' not in st.session_state:
             st.session_state.chat_manager = ChatManager(query_handler=execute_sql)
             print("Chat manager initialized")
@@ -77,15 +72,20 @@ def render_authenticated_interface(auth: AuthManager):
         # Main content area
         if selected == "User Profile":
             auth.show_user_details()
+
         elif selected == "Chatbot":
-            if hasattr(st.session_state, 'chat_manager'):
-                st.session_state.chat_manager.render_chat_interface()
+            if 'chat_manager' in st.session_state:
+                # Use the new render_chat_interface function
+                render_chat_interface(st.session_state.chat_manager)
             else:
                 st.error("Chat manager not properly initialized. Please refresh the page.")
+
         elif selected == "Context Files":
             st.session_state.context_manager.render_interface()
+
         elif selected == "Audio Creator":
             st.session_state.audio_creator.render_interface()
+
         print(f"Rendered {selected} interface")
     except Exception as e:
         print(f"Error in authenticated interface: {str(e)}")
@@ -106,6 +106,7 @@ def render_auth_pages(auth: AuthManager):
 
         with tab2:
             auth.render_registration()
+
         print("Auth pages rendered")
     except Exception as e:
         print(f"Error in auth pages: {str(e)}")
@@ -129,8 +130,8 @@ def main():
             render_authenticated_interface(auth)
         else:
             render_auth_pages(auth)
-        print("Main function completed")
 
+        print("Main function completed")
     except Exception as e:
         print(f"Error in main function: {str(e)}")
         st.error(f"An error occurred: {str(e)}")

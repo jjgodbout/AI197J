@@ -45,12 +45,18 @@ class LLMFactory:
 
         return base_kwargs
 
+
     @staticmethod
     def create_model(config: LLMConfig, callback_manager: Optional[CallbackManager] = None) -> BaseChatModel:
         """Create a LangChain chat model instance"""
         try:
             # Convert provider string to enum if needed
             provider = Provider(config.provider) if isinstance(config.provider, str) else config.provider
+            print(f"\n=== Creating LLM Instance ===")
+            print(f"Provider: {provider}")
+            print(f"Model Name: {config.model_name}")
+            print(f"Model ID: {config.model_id}")
+            print(f"Context Length: {config.context_length}")
 
             # Validate environment variables
             LLMFactory.validate_environment(provider)
@@ -66,13 +72,26 @@ class LLMFactory:
                 )
 
             elif provider == Provider.ANTHROPIC:
-                return ChatAnthropic(
-                    model=config.model_name,
-                    anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
-                    max_retries=3,
-                    model_kwargs={"top_p": config.top_p} if config.top_p else None,
-                    **base_kwargs
-                )
+                # Ensure we're using the exact model name for Anthropic
+                model_name = config.model_name
+                print(f"Creating Anthropic model with name: {model_name}")
+
+                # Add model-specific parameters
+                anthropic_kwargs = {
+                    "model": model_name,
+                    "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY"),
+                    "max_tokens": config.context_length,  # Set max tokens from config
+                    "max_retries": 3
+                }
+
+                # Add base kwargs
+                anthropic_kwargs.update(base_kwargs)
+
+                if config.top_p:
+                    anthropic_kwargs["model_kwargs"] = {"top_p": config.top_p}
+
+                print(f"Anthropic model parameters: {anthropic_kwargs}")
+                return ChatAnthropic(**anthropic_kwargs)
 
             elif provider == Provider.COHERE:
                 return ChatCohere(
@@ -83,14 +102,13 @@ class LLMFactory:
                 )
 
             elif provider == Provider.SNOWFLAKE:
-                # Use your Snowflake connection class
                 snowflake_conn = SnowflakeConnection()
                 session = snowflake_conn.get_session()
 
                 return ChatSnowflakeCortex(
                     model=config.model_name,
                     cortex_function="complete",
-                    session=session,  # Use the session from your connection class
+                    session=session,
                     model_kwargs={"top_p": config.top_p} if config.top_p else None,
                     **base_kwargs
                 )
@@ -99,4 +117,25 @@ class LLMFactory:
                 raise ValueError(f"Unsupported provider: {provider}")
 
         except Exception as e:
+            print(f"Error creating model: {str(e)}")
             raise ValueError(f"Error creating model: {str(e)}")
+
+
+    @staticmethod
+    def _get_base_kwargs(config: LLMConfig, callback_manager: Optional[CallbackManager] = None) -> Dict[str, Any]:
+        """Get base keyword arguments for model initialization"""
+        base_kwargs = {
+            "temperature": config.temperature,
+            "streaming": config.streaming,
+            "callbacks": callback_manager.handlers if callback_manager else None
+        }
+
+        # Add max tokens from context length if specified
+        if config.context_length:
+            base_kwargs["max_tokens"] = config.context_length
+
+        # Add any provider-specific config parameters
+        if config.max_tokens:
+            base_kwargs["max_tokens"] = config.max_tokens
+
+        return base_kwargs
