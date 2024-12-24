@@ -45,7 +45,6 @@ class LLMFactory:
 
         return base_kwargs
 
-
     @staticmethod
     def create_model(config: LLMConfig, callback_manager: Optional[CallbackManager] = None) -> BaseChatModel:
         """Create a LangChain chat model instance"""
@@ -80,15 +79,22 @@ class LLMFactory:
                 anthropic_kwargs = {
                     "model": model_name,
                     "anthropic_api_key": os.getenv("ANTHROPIC_API_KEY"),
-                    "max_tokens": config.context_length,  # Set max tokens from config
-                    "max_retries": 3
+                    "max_tokens_to_sample": 4096,  # Response length limit
+                    "max_retries": 3,
+                    # Use max_tokens instead of context_length for Anthropic
+                    "model_kwargs": {
+                        "max_tokens": config.context_length
+                    }
                 }
 
-                # Add base kwargs
-                anthropic_kwargs.update(base_kwargs)
+                # Add base kwargs but exclude max_tokens
+                base_kwargs_filtered = {k: v for k, v in base_kwargs.items()
+                                        if k not in ('max_tokens')}
+                anthropic_kwargs.update(base_kwargs_filtered)
 
+                # Add top_p if specified
                 if config.top_p:
-                    anthropic_kwargs["model_kwargs"] = {"top_p": config.top_p}
+                    anthropic_kwargs["model_kwargs"]["top_p"] = config.top_p
 
                 print(f"Anthropic model parameters: {anthropic_kwargs}")
                 return ChatAnthropic(**anthropic_kwargs)

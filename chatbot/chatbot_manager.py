@@ -90,10 +90,10 @@ class ChatManager:
             print(f"Error retrieving thread history: {str(e)}")
             return []
 
+
     @staticmethod
-    @st.cache_resource(show_spinner=False)
     def _create_llm_model(_config: LLMConfig, _callback_manager: Optional[CallbackManager] = None):
-        """Cached creation of LLM model"""
+        """Cached creation of LLM model with proper cache key"""
         return LLMFactory.create_model(_config, _callback_manager)
 
     @staticmethod

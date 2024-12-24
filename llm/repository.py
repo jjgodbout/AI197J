@@ -7,12 +7,15 @@ class LLMRepository:
     """Repository for accessing LLM configurations from Snowflake"""
 
     def __init__(self, query_handler):
-        self.query_handler = query_handler
         self.table_name = "COLBY.AI197J.LLM_MODELS"
+        self.query_handler = query_handler
 
     def _execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
         """Execute a query and return results"""
         try:
+            print(f"Executing query: {query}")
+            print(f"With params: {params}")
+
             result = self.query_handler(query, "snowflake", params)
             # Convert Snowpark Row objects to dictionaries
             if result:
@@ -96,10 +99,11 @@ class LLMRepository:
         if group:
             conditions.append(f"MODEL_GROUP = '{group}'")
 
+        search_pattern = f"%{search_term}%"
         conditions.append(f"""
-            (LOWER(MODEL_NAME) LIKE LOWER('%{search_term}%')
-            OR LOWER(DESCRIPTION) LIKE LOWER('%{search_term}%')
-            OR LOWER(MODEL_TYPE) LIKE LOWER('%{search_term}%'))
+            (LOWER(MODEL_NAME) LIKE LOWER('{search_pattern}')
+            OR LOWER(DESCRIPTION) LIKE LOWER('{search_pattern}')
+            OR LOWER(MODEL_TYPE) LIKE LOWER('{search_pattern}'))
         """)
 
         where_clause = " AND ".join(conditions)
