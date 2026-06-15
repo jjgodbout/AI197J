@@ -3,7 +3,7 @@ from datetime import datetime
 import os
 import json
 import streamlit as st
-from langchain.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 import uuid
 import logging
