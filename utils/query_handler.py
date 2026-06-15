@@ -1,6 +1,7 @@
 from connectors.snowflake_connector import SnowflakeConnection
 from snowflake.snowpark.session import Session as SnowparkSession
 from connectors.aws_connector import MySQLAuroraConnection
+import streamlit as st
 import time
 from pymysql.err import OperationalError as PyMySQLOperationalError, InterfaceError as PyMySQLInterfaceError
 
@@ -8,7 +9,9 @@ def execute_sql(query, db_type, params=None, retries=2):
     while retries > 0:
         try:
             if db_type == "snowflake":
-                sf_connection = SnowflakeConnection()
+                # Get the user's access token from session state
+                access_token = st.session_state.get('snowflake_token')
+                sf_connection = SnowflakeConnection(access_token=access_token)
                 conn = sf_connection.get_session()
                 if not isinstance(conn, SnowparkSession):
                     raise TypeError("Snowflake connection not established properly")
@@ -32,7 +35,7 @@ def execute_sql(query, db_type, params=None, retries=2):
 
         except (PyMySQLOperationalError, PyMySQLInterfaceError) as e:
             print(f"Encountered an error: {e}")
-            retries -= 1
+            retries -= 3
             if retries <= 0:
                 raise
             print(f"Retrying... {retries} attempts left")

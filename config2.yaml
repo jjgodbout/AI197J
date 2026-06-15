@@ -4,13 +4,12 @@ cookie:
   name: colby_auth_cookie
 credentials:
   usernames:
-    jgodbout@colby.edu:
-      email: jgodbout@technomics.net
-      first_name: Jon
-      last_name: Godbout
+    dagyem26:
+      email: dagyem26@colby.edu
+      first_name: Derek
+      last_name: Agyemang Duah
       logged_in: false
-      password: $2b$12$WJilVHYXNq2eRSZgPhGX9OVuk0a.RmK6i/kop5d6qx5tEcttJEvNO
-      password_hint: 'queens college #1'
+      password: $2b$12$5MYTrnCM2GEJQVhylc.eKOByTdZT6AH.FJlEeDLfjQ4C4KMEnzd3q
       roles: null
     ddenat28:
       email: ddenat28@colby.edu
@@ -32,6 +31,14 @@ credentials:
       last_name: Godbout
       logged_in: false
       password: $2b$12$tFQ/QKtD1XWiP832WNdL..9lGu18MspEp2PRAQvKQSUVRND91MlTC
+      roles: null
+    jgodbout@colby.edu:
+      email: jgodbout@colby.edu
+      first_name: Jon
+      last_name: Godbout
+      logged_in: false
+      password: $2b$12$34.Efet9SO8Qtx6dITui8.t3ISRKxQ0Htsy03EVPTvxlyDQHKkCGa
+      password_hint: 'queens college #1'
       roles: null
     jqreed25:
       email: jqreed25@colby.edu
@@ -102,13 +109,6 @@ credentials:
       last_name: Tsai
       logged_in: false
       password: $2b$12$cMaZu//sZjq0ubfHNxhpiedeo7pZ2EvrCPVCuSxX.NH/yi0bRalaq
-      roles: null
-    dagyem26:
-      email: dagyem26@colby.edu
-      first_name: Derek
-      last_name: Agyemang Duah
-      logged_in: false
-      password: $2b$12$5MYTrnCM2GEJQVhylc.eKOByTdZT6AH.FJlEeDLfjQ4C4KMEnzd3q
       roles: null
 pre-authorized:
   emails: []

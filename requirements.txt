@@ -10,10 +10,18 @@ tiktoken
 openai
 llama-index
 anthropic
-literalai
+# literalai  # removed - service shut down, replaced with Snowflake storage
 streamlit
 streamlit-authenticator
 langchain-anthropic
+langchain-openai
 cohere
 langchain-cohere
 pypdf2
+llama-index
+llama-index-core
+llama-parse
+llama-index-readers-file
+elevenlabs
+streamlit-agraph
+pygame

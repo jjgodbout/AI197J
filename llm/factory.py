@@ -36,7 +36,7 @@ class LLMFactory:
         """Get base keyword arguments for model initialization"""
         base_kwargs = {
             "temperature": config.temperature,
-            "streaming": config.streaming,
+            "streaming": True,
             "callbacks": callback_manager.handlers if callback_manager else None
         }
 
@@ -62,6 +62,8 @@ class LLMFactory:
 
             # Get base configuration
             base_kwargs = LLMFactory._get_base_kwargs(config, callback_manager)
+
+            base_kwargs["streaming"] = True
 
             # Create model based on provider
             if provider == Provider.OPENAI:

@@ -2,20 +2,39 @@ import streamlit as st
 import pandas as pd
 import uuid
 from datetime import datetime
-from context.raw_text import RawDocumentText
-from concurrent.futures import ThreadPoolExecutor
-
-# Import your ChatManager
 from chatbot.chatbot_manager import ChatManager
+from context.raw_text import RawDocumentText
+from context.markdown import MarkdownDocumentText
+from pages.context_files import ContextFileManager
 
-executor = ThreadPoolExecutor(max_workers=4)
+import logging
+
+logger = logging.getLogger('chatbot_app')
 
 
 def render_chat_interface(manager: ChatManager):
-    """Render the full chat interface with initial settings form and thread management."""
+    """
+    Renders the AI Chat interface with Snowflake-backed history and streaming.
+    """
+    # Initialize key state variables if not present
+    if 'initialized' not in st.session_state:
+        st.session_state.initialized = False
+        st.session_state.messages = []
+        st.session_state.previous_thread = None
+        st.session_state.current_thread = None
+
+    if 'show_new_chat_form' not in st.session_state:
+        st.session_state.show_new_chat_form = False
+
+    if 'thread_list' not in st.session_state:
+        st.session_state.thread_list = []
+
+    if 'refresh_needed' not in st.session_state:
+        st.session_state.refresh_needed = True
 
     st.header("AI Chat")
 
+    # Authentication check
     if not st.session_state.get("authentication_status"):
         st.error("Please log in to use the chat")
         return
@@ -27,231 +46,415 @@ def render_chat_interface(manager: ChatManager):
         st.error("User ID or email not found in session")
         return
 
-    # Document handler for user documents
-    doc_handler = RawDocumentText()
-    try:
-        user_docs = executor.submit(doc_handler.get_user_documents, user_email).result()
-    except Exception as e:
-        st.error(f"Error fetching documents: {str(e)}")
-        user_docs = pd.DataFrame()
+    # Create main page layout
+    main_col = st.container()
 
-    # ---- SIDEBAR ----
+    # Sidebar: Thread Management
     with st.sidebar:
-        # Get all user threads
-        user_threads = manager.get_user_threads(user_email)
+        st.title("Chat Management")
 
-        # Create thread selection
-        thread_options = []
-        if user_threads:
-            thread_options = [(thread.id, thread.name or f"Chat from {thread.created_at or 'Unknown Date'}")
-                              for thread in user_threads]
+        col1, col2 = st.columns([2, 1])
 
-        col1, col2 = st.columns([4, 1])
         with col1:
-            if thread_options:
-                selected_thread = st.selectbox(
-                    "Select Chat",
-                    options=[t[0] for t in thread_options],
-                    format_func=lambda x: next((t[1] for t in thread_options if t[0] == x), x),
-                    index=None
-                )
-                if selected_thread:
-                    st.session_state.current_thread = selected_thread
-                    print(f"\n=== Selected Thread: {selected_thread} ===")
-
-        with col2:
-            if st.button("New Chat", type="primary"):
+            if st.button("New Chat", type="primary", key="new_chat_button"):
+                st.session_state.show_new_chat_form = True
                 st.session_state.current_thread = None
-                st.session_state.new_chat = True
-                print("\n=== Starting New Chat ===")
+                st.session_state.messages = []
+                st.session_state.previous_thread = None
+                st.session_state.initialized = False
                 st.rerun()
 
-    # ---- MAIN CHAT AREA ----
-    # Show settings form for new chat
-    if not st.session_state.get('current_thread'):
-        with st.form("chat_settings"):
-            st.subheader("New Chat Settings")
+        with col2:
+            if st.button("Refresh", key="refresh_threads"):
+                st.session_state.pop('thread_list', None)
+                st.session_state.refresh_needed = True
+                st.rerun()
 
-            # Get model information
-            models = manager.repository.get_all_active_models()
-            model_options = {m.model_name: m.model_id for m in models}
-            model_info = {m.model_name: {
+        st.divider()
+
+        # Fetch threads from Snowflake
+        if st.session_state.refresh_needed or not st.session_state.thread_list:
+            try:
+                threads = manager.get_user_threads(user_email)
+                thread_options = []
+                for thread in threads:
+                    thread_id = thread.get("id")
+                    name = thread.get("name", "")
+                    created_at = thread.get("created_at")
+                    if thread_id:
+                        display_name = name or f"Chat {created_at}"
+                        thread_options.append((thread_id, display_name))
+
+                st.session_state.thread_list = thread_options
+                st.session_state.refresh_needed = False
+            except Exception as e:
+                logger.error(f"Error fetching threads: {str(e)}")
+                st.error("Failed to load chat history")
+                st.session_state.thread_list = []
+                st.session_state.refresh_needed = False
+
+        # Thread selection dropdown
+        if st.session_state.thread_list:
+            selected_thread = st.selectbox(
+                "Select Conversation",
+                options=[t[0] for t in st.session_state.thread_list],
+                format_func=lambda x: next(
+                    (t[1] for t in st.session_state.thread_list if t[0] == x), x
+                ),
+                index=0,
+                key="thread_selector"
+            )
+            if selected_thread and not st.session_state.show_new_chat_form:
+                st.session_state.current_thread = selected_thread
+                if not st.session_state.initialized:
+                    st.session_state.initialized = True
+                    st.rerun()
+        else:
+            st.info("No conversations yet")
+
+    # Main Chat Area
+    with main_col:
+        if st.session_state.get("show_new_chat_form", False):
+            _render_new_chat_form(manager, user_id, user_email)
+        else:
+            _render_existing_chat(manager)
+
+
+def _render_new_chat_form(manager: ChatManager, user_id: str, user_email: str):
+    """Render the new chat creation form."""
+    with st.form("new_chat_form"):
+        st.subheader("Start New Chat")
+
+        # Get available models
+        manager.ensure_model_initialized()
+        models = manager.repository.get_all_active_models()
+        model_options = {m.model_name: m.model_id for m in models}
+        model_info = {
+            m.model_name: {
                 "id": m.model_id,
                 "context_length": m.context_length,
                 "provider": m.provider
-            } for m in models}
+            }
+            for m in models
+        }
 
-            # Layout form in columns
-            col1, col2 = st.columns(2)
-            with col1:
-                chat_name = st.text_input(
-                    "Chat Name",
-                    value=f"Chat - {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-                )
-
-                # Model selection with context length info
-                default_model = next(iter(model_options.keys())) if model_options else "gpt-3.5-turbo"
-                selected_model = st.selectbox(
-                    "Select Model",
-                    options=list(model_options.keys()),
-                    index=0,
-                    format_func=lambda x: f"{x} (Context: {model_info[x]['context_length']:,} tokens)"
-                )
-
-                # Show model details
-                if selected_model:
-                    st.caption(f"""Model Details:
-                    - Provider: {model_info[selected_model]['provider']}
-                    - Context Length: {model_info[selected_model]['context_length']:,} tokens
-                    - Model ID: {model_info[selected_model]['id']}""")
-
-            with col2:
-                temperature = st.slider(
-                    "Temperature",
-                    min_value=0.0,
-                    max_value=2.0,
-                    value=0.7,
-                    step=0.1,
-                    help="Higher = more creative"
-                )
-                use_history = st.checkbox(
-                    "Include Chat History",
-                    value=True
-                )
-
-            # System instructions and context
-            system_prompt = st.text_area(
-                "System Instructions",
-                value=manager.DEFAULT_SYSTEM_MESSAGE,
-                height=100
+        # Basic settings
+        col1, col2 = st.columns(2)
+        with col1:
+            chat_name = st.text_input(
+                "Chat Name",
+                value=f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            )
+            selected_model = st.selectbox(
+                "Model",
+                options=list(model_options.keys()),
+                format_func=lambda x: f"{x} ({model_info[x]['provider']})"
             )
 
-            context_text = st.text_area(
-                "Additional Context",
-                value="",
-                height=100,
-                help="Add any additional context for the AI"
+        with col2:
+            temperature = st.slider(
+                "Temperature", min_value=0.0, max_value=2.0,
+                value=0.7, step=0.1,
+                help="Higher values make output more creative but less precise"
+            )
+            use_history = st.checkbox(
+                "Use Chat History", value=True,
+                help="Include previous messages as context"
             )
 
-            # Document selection if available
-            if not user_docs.empty:
-                st.subheader("Document Context")
-                doc_options = []
-                for doc_id in user_docs['DOCUMENT_ID'].unique():
-                    doc_parts = user_docs[user_docs['DOCUMENT_ID'] == doc_id]
-                    doc_name = doc_parts['DOCUMENT_NAME'].iloc[0]
-                    for _, row in doc_parts.iterrows():
-                        option = {
-                            'id': f"{row['DOCUMENT_ID']}_{row['PART_NUMBER']}",
-                            'label': f"{doc_name} - Part {row['PART_NUMBER']} ({row['TOKEN_COUNT']} tokens)"
-                        }
-                        doc_options.append(option)
+        system_prompt = st.text_area(
+            "System Instructions",
+            value=manager.DEFAULT_SYSTEM_MESSAGE,
+            height=100,
+            help="Instructions that guide the AI's behavior"
+        )
 
-                selected_docs = st.multiselect(
-                    "Select Document Parts to Include",
-                    options=[opt['id'] for opt in doc_options],
-                    format_func=lambda x: next((opt['label'] for opt in doc_options if opt['id'] == x), x)
-                )
+        custom_context = st.text_area(
+            "Custom Context", value="", height=100,
+            help="Add any specific context for this conversation"
+        )
 
-            submitted = st.form_submit_button("Start Chat")
+        # Document selection
+        file_manager = ContextFileManager()
+        raw_doc = RawDocumentText()
+        markdown_doc = MarkdownDocumentText()
 
-            if submitted:
-                try:
-                    print("\n=== Form Submitted ===")
-                    print(f"Selected Model: {selected_model}")
-                    print(f"Model ID: {model_options[selected_model]}")
+        st.divider()
+        doc_tabs = st.tabs(["Raw/Markdown Documents", "Vector Search Documents"])
 
-                    # Create thread settings
-                    thread_settings = {
-                        "temperature": temperature,
-                        "system_prompt": system_prompt,
-                        "use_history": use_history,
-                        "context_text": context_text,
-                        "model_name": selected_model,
-                        "model_id": model_options[selected_model],
-                        "context_length": model_info[selected_model]['context_length']
+        selected_doc_pairs = []
+        selected_vector_docs = []
+        use_vector_search = False
+        results_per_doc = 3
+        chunk_type = "LLAMA_PARSE"
+
+        with doc_tabs[0]:
+            st.subheader("Traditional Document Selection")
+            try:
+                if user_email:
+                    raw_docs_df = raw_doc.get_user_documents(user_email)
+                    markdown_docs_df = markdown_doc.get_user_documents(user_email)
+
+                    if not raw_docs_df.empty or not markdown_docs_df.empty:
+                        doc_tab1, doc_tab2 = st.tabs(["Raw Text", "Markdown"])
+
+                        with doc_tab1:
+                            if not raw_docs_df.empty:
+                                raw_doc_options = raw_docs_df.apply(
+                                    lambda x: f"{x['DOCUMENT_NAME']} (Part {x['PART_NUMBER']} - Raw)",
+                                    axis=1
+                                ).tolist()
+                                selected_raw_docs = st.multiselect(
+                                    "Select Raw Text Documents", options=raw_doc_options
+                                )
+                                for selection in selected_raw_docs:
+                                    doc_info = raw_docs_df[
+                                        raw_docs_df.apply(
+                                            lambda x: f"{x['DOCUMENT_NAME']} (Part {x['PART_NUMBER']} - Raw)",
+                                            axis=1
+                                        ) == selection
+                                    ].iloc[0]
+                                    selected_doc_pairs.append({
+                                        "document_id": int(doc_info['DOCUMENT_ID']),
+                                        "part_number": int(doc_info['PART_NUMBER']),
+                                        "type": "raw"
+                                    })
+                            else:
+                                st.info("No raw text documents available")
+
+                        with doc_tab2:
+                            if not markdown_docs_df.empty:
+                                markdown_doc_options = markdown_docs_df.apply(
+                                    lambda x: f"{x['DOCUMENT_NAME']} (Part {x['PART_NUMBER']} - Markdown)",
+                                    axis=1
+                                ).tolist()
+                                selected_markdown_docs = st.multiselect(
+                                    "Select Markdown Documents", options=markdown_doc_options
+                                )
+                                for selection in selected_markdown_docs:
+                                    doc_info = markdown_docs_df[
+                                        markdown_docs_df.apply(
+                                            lambda x: f"{x['DOCUMENT_NAME']} (Part {x['PART_NUMBER']} - Markdown)",
+                                            axis=1
+                                        ) == selection
+                                    ].iloc[0]
+                                    selected_doc_pairs.append({
+                                        "document_id": int(doc_info['DOCUMENT_ID']),
+                                        "part_number": int(doc_info['PART_NUMBER']),
+                                        "type": "markdown"
+                                    })
+                            else:
+                                st.info("No markdown documents available")
+                    else:
+                        st.info("No documents found for your account")
+            except Exception as e:
+                logger.error(f"Error loading traditional documents: {str(e)}")
+                st.error("Failed to load traditional documents")
+
+        with doc_tabs[1]:
+            st.subheader("Vector Search Documents")
+            try:
+                if user_email:
+                    docs_df = file_manager.get_user_documents(user_email)
+                    if not docs_df.empty:
+                        doc_options = docs_df[['id', 'name', 'source', 'token_count']].copy()
+                        selected_docs = st.multiselect(
+                            "Select documents for vector search",
+                            options=doc_options['name'].tolist(),
+                            help="Choose documents to search through during chat"
+                        )
+
+                        if selected_docs:
+                            for doc_name in selected_docs:
+                                doc_info = docs_df[docs_df['name'] == doc_name].iloc[0]
+                                selected_vector_docs.append({
+                                    "document_id": int(doc_info['id']),
+                                    "name": doc_name,
+                                    "source": doc_info['source']
+                                })
+                                st.info(
+                                    f"📄 {doc_name}\n\n"
+                                    f"Source: {doc_info['source']}\n"
+                                    f"Tokens: {int(doc_info.get('token_count', 0)):,}"
+                                )
+
+                        use_vector_search = st.checkbox(
+                            "Enable Vector Search",
+                            value=bool(selected_docs),
+                            help="Use semantic search to find relevant information"
+                        )
+
+                        if use_vector_search and selected_docs:
+                            vc1, vc2 = st.columns(2)
+                            with vc1:
+                                results_per_doc = st.number_input(
+                                    "Results per document",
+                                    min_value=1, max_value=200, value=100
+                                )
+                            with vc2:
+                                chunk_type = st.selectbox(
+                                    "Content type",
+                                    options=["LLAMA_PARSE", "RAW_TEXT"],
+                                    format_func=lambda x: "Markdown" if x == "LLAMA_PARSE" else "Raw Text"
+                                )
+                    else:
+                        st.info("No documents available for vector search")
+            except Exception as e:
+                logger.error(f"Error loading vector search documents: {str(e)}")
+                st.error("Failed to load vector search documents")
+
+        # Submit button
+        submitted = st.form_submit_button("Start Chat", type="primary")
+
+        if submitted:
+            try:
+                model_changed = manager.change_model(selected_model)
+                if not model_changed:
+                    raise ValueError(f"Failed to change model to {selected_model}")
+
+                thread_settings = {
+                    "temperature": temperature,
+                    "system_prompt": system_prompt,
+                    "use_history": use_history,
+                    "model_name": selected_model,
+                    "model_id": model_options[selected_model],
+                    "context_length": model_info[selected_model]['context_length'],
+                    "custom_context": custom_context,
+                    "selected_documents": selected_doc_pairs,
+                    "vector_search": {
+                        "enabled": use_vector_search,
+                        "documents": selected_vector_docs,
+                        "results_per_doc": results_per_doc,
+                        "chunk_type": chunk_type,
                     }
-                    print(f"Thread Settings: {thread_settings}")
+                }
 
-                    # Handle selected documents
-                    if not user_docs.empty and selected_docs:
-                        combined_context = []
-                        total_tokens = 0
-                        for selection in selected_docs:
-                            doc_id, part_number = selection.split('_')
-                            try:
-                                text_content = executor.submit(doc_handler.get_raw_text, doc_id,
-                                                               int(part_number)).result()
-                                combined_context.extend(text_content)
-                                # Rough token estimation
-                                total_tokens += sum(len(text.split()) for text in text_content)
-                            except Exception as e:
-                                st.error(f"Error fetching content for {selection}: {str(e)}")
+                thread = manager.create_thread(
+                    name=chat_name,
+                    user_email=st.session_state.get("username"),
+                    settings=thread_settings,
+                )
 
-                        if combined_context:
-                            doc_context = "\n\n".join(combined_context)
-                            thread_settings["context_text"] = context_text + "\n\n" + doc_context
-                            print(f"Added document context. Estimated total tokens: {total_tokens}")
+                st.session_state.show_new_chat_form = False
+                st.session_state.current_thread = thread["id"]
+                st.session_state.messages = []
+                st.session_state.refresh_needed = True
+                st.session_state.pop('thread_list', None)
+                st.rerun()
 
-                            # Warn about potential context length issues
-                            if total_tokens > model_info[selected_model]['context_length'] * 0.75:
-                                st.warning(
-                                    f"Selected documents may use a large portion of the model's context length. Consider using a model with larger context window or selecting fewer documents.")
+            except Exception as e:
+                logger.error(f"Error creating chat: {str(e)}")
+                st.error(f"Error creating chat: {str(e)}")
 
-                    # Switch to selected model before creating thread
-                    print("Switching to selected model...")
-                    manager.switch_model(model_options[selected_model])
 
-                    # Create new thread with settings
-                    print("Creating new thread...")
-                    thread = manager.get_or_create_thread(chat_name, user_id, thread_settings)
-                    print(f"Thread created with ID: {thread.id}")
-                    st.session_state.current_thread = thread.id
-                    st.rerun()
-                except Exception as e:
-                    st.error(f"Error creating thread: {str(e)}")
-                    print(f"Error details: {str(e)}")
+def _render_existing_chat(manager: ChatManager):
+    """Render the existing chat conversation view."""
+    current_thread_id = st.session_state.current_thread
 
-    # Show chat interface if thread exists
-    else:
-        current_thread_id = st.session_state.current_thread
-        # Get thread settings for display
+    # Load history when thread changes
+    if current_thread_id and current_thread_id != st.session_state.previous_thread:
+        thread_history = manager.get_thread_history(current_thread_id)
+        st.session_state.messages = [
+            {'role': msg['role'], 'content': msg['content'], 'created_at': msg.get('created_at')}
+            for msg in thread_history
+            if msg['role'] in ('user', 'assistant')
+        ]
+        st.session_state.previous_thread = current_thread_id
+
+    if not current_thread_id:
+        st.info("Select a conversation or start a new chat.")
+        return
+
+    # Chat settings expander
+    with st.expander("Chat Settings"):
         thread_settings = manager.get_thread_settings(current_thread_id)
 
-        # Show current chat info in sidebar
-        with st.sidebar:
-            with st.expander("Current Chat Settings", expanded=False):
-                st.info(f"🤖 Model: {thread_settings.get('model_name', 'Unknown')}")
-                st.info(f"🌡️ Temperature: {thread_settings.get('temperature', 0.7)}")
-                st.info(f"📚 History: {'Enabled' if thread_settings.get('use_history', True) else 'Disabled'}")
-                if thread_settings.get('context_text', '').strip():
-                    st.info("📄 Has Context: Yes")
-                context_length = thread_settings.get('context_length', 0)
-                st.info(f"📏 Context Length: {context_length:,} tokens")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.markdown("##### Model Settings")
+            st.info(f"Model: {thread_settings.get('model_name', 'Unknown')}")
+            st.info(f"Temperature: {thread_settings.get('temperature', 0.7)}")
 
-        # Display message history
-        messages = manager.get_thread_history(current_thread_id)
+        with col2:
+            st.markdown("##### Context Settings")
+            st.info(f"Context Length: {thread_settings.get('context_length', 0):,} tokens")
+            st.info(f"History: {'Enabled' if thread_settings.get('use_history', True) else 'Disabled'}")
 
-        # System message
-        st.chat_message("system").write(thread_settings.get('system_prompt', manager.DEFAULT_SYSTEM_MESSAGE))
+        st.markdown("##### System Instructions")
+        st.text_area(
+            "System Prompt",
+            value=thread_settings.get('system_prompt', ''),
+            disabled=True, height=100
+        )
 
-        # Chat messages
-        for message in messages:
-            role = message.get('input', {}).get('role')
-            if role != 'system':
-                with st.chat_message(role):
-                    content = message.get('input', {}).get('content', '')
-                    st.write(content)
+        if thread_settings.get('custom_context'):
+            st.markdown("##### Additional Context")
+            st.text_area(
+                "Custom Context",
+                value=thread_settings['custom_context'],
+                disabled=True, height=100
+            )
 
-        # New message input
-        if prompt := st.chat_input("Type your message here...", key="chat_input"):
-            with st.chat_message("user"):
-                st.write(prompt)
-            try:
+        col1, col2 = st.columns(2)
+        with col1:
+            selected_docs = thread_settings.get('selected_documents', [])
+            if selected_docs:
+                st.markdown("##### Traditional Documents")
+                for doc in selected_docs:
+                    st.info(
+                        f"Document ID: {doc['document_id']}\n"
+                        f"Part: {doc['part_number']}\n"
+                        f"Type: {doc['type']}"
+                    )
+        with col2:
+            vector_search = thread_settings.get('vector_search', {})
+            if vector_search.get('enabled'):
+                st.markdown("##### Vector Search Documents")
+                for doc in vector_search.get('documents', []):
+                    st.info(f"📄 {doc['name']}\nSource: {doc['source']}")
+                st.success(
+                    f"Vector Search Enabled\n"
+                    f"Results per doc: {vector_search.get('results_per_doc', 3)}\n"
+                    f"Content type: {vector_search.get('chunk_type', 'LLAMA_PARSE')}"
+                )
+
+    # Chat messages display
+    chat_container = st.container()
+    with chat_container:
+        messages_container = st.container(height=500, border=True)
+
+        with messages_container:
+            col1, = st.columns(1)
+            with col1:
+                for msg in st.session_state.messages:
+                    with st.chat_message(msg["role"]):
+                        st.markdown(msg["content"])
+
+        # Chat input
+        if prompt := st.chat_input("Type your message here", key="chat_input"):
+            with messages_container:
+                with st.chat_message("user"):
+                    st.markdown(prompt)
+
                 with st.chat_message("assistant"):
                     message_placeholder = st.empty()
-                    full_response = manager.process_message(current_thread_id, prompt)
-                    message_placeholder.markdown(full_response)
-            except Exception as e:
-                st.error(f"Error processing message: {str(e)}")
-                print(f"Error details: {str(e)}")
+                    full_response = ""
+
+                    try:
+                        for chunk in manager.process_message(current_thread_id, prompt):
+                            if chunk:
+                                full_response += chunk
+                                message_placeholder.markdown(full_response + "▌")
+                        message_placeholder.markdown(full_response)
+
+                    except Exception as e:
+                        logger.error(f"Error generating response: {str(e)}")
+                        st.error(f"Error generating response: {str(e)}")
+
+            # Refresh history from Snowflake
+            thread_history = manager.get_thread_history(current_thread_id)
+            st.session_state.messages = [
+                {'role': msg['role'], 'content': msg['content'], 'created_at': msg.get('created_at')}
+                for msg in thread_history
+                if msg['role'] in ('user', 'assistant')
+            ]
