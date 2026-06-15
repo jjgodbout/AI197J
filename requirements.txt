@@ -3,7 +3,6 @@ boto3
 snowflake-snowpark-python
 snowflake-connector-python
 snowflake-sqlalchemy
-jupyter
 python-dotenv
 pymysql
 tiktoken
@@ -18,10 +17,8 @@ langchain-openai
 cohere
 langchain-cohere
 pypdf2
-llama-index
 llama-index-core
 llama-parse
 llama-index-readers-file
 elevenlabs
 streamlit-agraph
-pygame
