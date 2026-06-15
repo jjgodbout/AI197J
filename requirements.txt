@@ -22,3 +22,14 @@ llama-parse
 llama-index-readers-file
 elevenlabs
 streamlit-agraph
+
+# Imported directly in code (previously relied on transitive installs)
+langchain
+langchain-community
+PyYAML
+nest-asyncio
+botocore
+langchain-core
+pydantic
+requests
+tqdm
